@@ -4,34 +4,63 @@ import { getEffectiveDrawing, generateId, getDrawingBoundingBox, isPathClosed, d
 import { hitTestStroke, hitTestDrawing, canvasToWorld, worldToLocal, localToWorld, getDrawingTransform, getTransformHandles, hitTestHandle } from "../utils/geometry";
 import type { Drawing, DrawingStroke, Point, HandleType, AppState } from "../types";
 
-// Collects initial {x, y} positions of all group members (root parent + all descendants)
-// Used to move the entire group together during drag
-function collectGroupPositions(
+// Collects initial {x, y} positions for every object that must move together.
+// Movement is intentionally group-wide for parent/child rigs and keep-attached/bone
+// relationships, while rotate/scale/width/height remain individual transforms.
+function collectRigPositions(
   drawingId: string,
   st: Pick<AppState, "drawings" | "frames" | "currentFrameIndex">
 ): Record<string, { x: number; y: number }> {
-  const drawings = st.drawings;
-  const frames = st.frames;
-  const frameIndex = st.currentFrameIndex;
+  const selectedLayerGraph = st.drawings;
+  const visited = new Set<string>();
+  const queue = [drawingId];
 
-  // Walk up to the root parent
-  let rootId = drawingId;
-  let depth = 0;
-  while (drawings[rootId]?.parentId && depth < 50) {
-    rootId = drawings[rootId].parentId!;
-    depth++;
+  const add = (id: string | null | undefined) => {
+    if (id && selectedLayerGraph[id] && !visited.has(id)) queue.push(id);
+  };
+
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (visited.has(id) || !selectedLayerGraph[id]) continue;
+    visited.add(id);
+    const drawing = selectedLayerGraph[id];
+
+    // Parent tree in both directions.
+    add(drawing.parentId);
+    drawing.childIds.forEach(add);
+
+    // Explicit keep-attached links in both directions.
+    add(drawing.keepAttachedToId);
+    Object.values(selectedLayerGraph).forEach((candidate) => {
+      if (candidate.keepAttachedToId === id) add(candidate.id);
+    });
+
+    // Bone-connected drawings are also part of the same move rig.
+    const boneIds = new Set(drawing.bones.map((bone) => bone.id));
+    Object.values(selectedLayerGraph).forEach((candidate) => {
+      const hasConnection = candidate.bones.some((bone) =>
+        (bone.connectedToBoneId && boneIds.has(bone.connectedToBoneId)) ||
+        drawing.bones.some((sourceBone) => sourceBone.connectedToBoneId === bone.id)
+      );
+      if (hasConnection) add(candidate.id);
+    });
   }
 
-  // Collect all group members (root + all descendants) recursively
   const positions: Record<string, { x: number; y: number }> = {};
-  function collect(id: string) {
-    const eff = getEffectiveDrawing(drawings, frames, id, frameIndex);
-    if (!eff) return;
-    positions[id] = { x: eff.x, y: eff.y };
-    drawings[id]?.childIds.forEach(collect);
-  }
-  collect(rootId);
+  visited.forEach((id) => {
+    const eff = getEffectiveDrawing(st.drawings, st.frames, id, st.currentFrameIndex);
+    if (eff) positions[id] = { x: eff.x, y: eff.y };
+  });
   return positions;
+}
+
+function getPrimaryPivotWorld(drawing: Drawing): { x: number; y: number } {
+  const transform = getDrawingTransform(drawing);
+  const activePivot = drawing.pivotPoints.find((pivot) => pivot.id === drawing.activePivotId);
+  const lockedPivot = drawing.pivotPoints.find((pivot) => pivot.locked);
+  const pivot = activePivot ?? lockedPivot;
+  if (pivot) return localToWorld(pivot.x, pivot.y, transform);
+  return localToWorld(drawing.pivot.x, drawing.pivot.y, transform);
 }
 
 interface CanvasState {
@@ -187,7 +216,15 @@ const AnimationCanvas: React.FC = () => {
         if (drawing) {
           renderSelectionOverlay(ctx, drawing, st.transformHandleSize, st.zoom, st.panX, st.panY);
           renderPivotOverlay(ctx, drawing, st.transformHandleSize, st.zoom, st.panX, st.panY);
-          renderBonesOverlay(ctx, drawing, st.drawings, st.zoom, st.panX, st.panY, cs.boneConnectionStart, { x: cs.boneLineEndX, y: cs.boneLineEndY });
+          renderBonesOverlay(ctx, drawing, st.drawings, st.zoom, st.panX, st.panY, (cs.boneConnectionStart ?? st.boneConnectionSource), { x: cs.boneLineEndX, y: cs.boneLineEndY }, st.transformHandleSize);
+          if (st.activeTool === "bone") {
+            Object.values(st.drawings).forEach((candidate) => {
+              if (candidate.id !== drawing.id && candidate.visible) {
+                const eff = getEffectiveDrawing(st.drawings, st.frames, candidate.id, st.currentFrameIndex);
+                if (eff) renderBonesOverlay(ctx, eff, st.drawings, st.zoom, st.panX, st.panY, (cs.boneConnectionStart ?? st.boneConnectionSource), { x: cs.boneLineEndX, y: cs.boneLineEndY }, st.transformHandleSize);
+              }
+            });
+          }
         }
       }
 
@@ -295,13 +332,14 @@ const AnimationCanvas: React.FC = () => {
       if (selId) {
         const drawing = getEffectiveDrawing(st.drawings, st.frames, selId, st.currentFrameIndex);
         if (drawing) {
-          const handles = getTransformHandles(drawing, st.transformHandleSize / st.zoom);
-          const hitHandle = hitTestHandle(wx, wy, handles, st.transformHandleSize / st.zoom);
+          const visualHandleSize = Math.max(st.transformHandleSize, 44) / st.zoom;
+          const handles = getTransformHandles(drawing, visualHandleSize);
+          const hitHandle = hitTestHandle(wx, wy, handles, visualHandleSize * 0.9);
           if (hitHandle) {
             // For move drag, collect the positions of the entire parent-child group
             let groupPositions: Record<string, { x: number; y: number }> | null = null;
             if (hitHandle.type === "move") {
-              groupPositions = collectGroupPositions(selId, st);
+              groupPositions = collectRigPositions(selId, st);
             }
             setCsState((s) => ({
               ...s, isDragging: true, dragHandle: hitHandle.type,
@@ -313,7 +351,7 @@ const AnimationCanvas: React.FC = () => {
           }
           // Check if inside drawing for move
           if (hitTestStroke(wx, wy, drawing, 10 / st.zoom) || hitTestDrawing(wx, wy, drawing, 5 / st.zoom)) {
-            const groupPositions = collectGroupPositions(selId, st);
+            const groupPositions = collectRigPositions(selId, st);
             setCsState((s) => ({
               ...s, isDragging: true, dragHandle: "move",
               dragStartX: wx, dragStartY: wy,
@@ -342,7 +380,7 @@ const AnimationCanvas: React.FC = () => {
       for (const pivot of drawing.pivotPoints) {
         if (pivot.locked) continue;
         const pw = localToWorld(pivot.x, pivot.y, t);
-        if (Math.hypot(wx - pw.x, wy - pw.y) <= (st.transformHandleSize * 0.8) / st.zoom) {
+        if (Math.hypot(wx - pw.x, wy - pw.y) <= Math.max(st.transformHandleSize, 48) / st.zoom) {
           st.setActivePivot(selId, pivot.id);
           setCsState((s) => ({ ...s, movingPivotId: pivot.id }));
           return;
@@ -361,11 +399,36 @@ const AnimationCanvas: React.FC = () => {
       if (!drawing) return;
       const t = getDrawingTransform(drawing);
 
+      // While a bone connection is armed, let the target be ANY visible drawing's bone,
+      // not only the currently selected object. This works for both canvas-started
+      // connections and right-panel "Start Connection" actions.
+      const armedBoneId = csRef.current.boneConnectionStart ?? st.boneConnectionSource;
+      if (armedBoneId) {
+        for (const candidateId of st.drawingOrder) {
+          const candidate = getEffectiveDrawing(st.drawings, st.frames, candidateId, st.currentFrameIndex);
+          if (!candidate || !candidate.visible) continue;
+          const candidateTransform = getDrawingTransform(candidate);
+          for (const bone of candidate.bones) {
+            if (bone.id === armedBoneId) continue;
+            const bw = localToWorld(bone.x, bone.y, candidateTransform);
+            if (Math.hypot(wx - bw.x, wy - bw.y) <= Math.max(st.transformHandleSize * 0.45, 22) / st.zoom) {
+              st.connectBones(armedBoneId, bone.id);
+              setCsState((s) => ({ ...s, boneConnectionStart: null, boneConnectionStartWorld: null }));
+              return;
+            }
+          }
+        }
+        st.setBoneConnectionSource(null);
+        setCsState((s) => ({ ...s, boneConnectionStart: null, boneConnectionStartWorld: null }));
+        return;
+      }
+
       // Check if clicking existing bone (for connection dragging)
       for (const bone of drawing.bones) {
         const bw = localToWorld(bone.x, bone.y, t);
-        if (Math.hypot(wx - bw.x, wy - bw.y) <= 15 / st.zoom) {
+        if (Math.hypot(wx - bw.x, wy - bw.y) <= Math.max(st.transformHandleSize * 0.45, 22) / st.zoom) {
           if (bone.connectionEnabled && csRef.current.boneConnectionStart === null) {
+            st.setBoneConnectionSource(bone.id);
             setCsState((s) => ({
               ...s, boneConnectionStart: bone.id,
               boneConnectionStartWorld: bw,
@@ -381,8 +444,9 @@ const AnimationCanvas: React.FC = () => {
         }
       }
 
-      // If in connection mode, click elsewhere cancels
-      if (csRef.current.boneConnectionStart) {
+      // If in connection mode, click elsewhere cancels.
+      if (csRef.current.boneConnectionStart || st.boneConnectionSource) {
+        st.setBoneConnectionSource(null);
         setCsState((s) => ({ ...s, boneConnectionStart: null, boneConnectionStartWorld: null }));
         return;
       }
@@ -529,8 +593,8 @@ const AnimationCanvas: React.FC = () => {
       return;
     }
 
-    // Bone connection line preview
-    if (cs.boneConnectionStart) {
+    // Bone connection line preview (supports both canvas-started and panel-started connections).
+    if (cs.boneConnectionStart || st.boneConnectionSource) {
       setCsState((s) => ({ ...s, boneLineEndX: wx, boneLineEndY: wy }));
     }
 
@@ -587,26 +651,11 @@ const AnimationCanvas: React.FC = () => {
           );
         }
       } else if (cs.dragHandle === "rotate") {
-        // Rotation center: use active pivot if set, else use visual bounding-box center
-        let pivotWx: number;
-        let pivotWy: number;
-        if (drawing.activePivotId) {
-          // User placed a pivot — stays fixed at (x + pivot.x, y + pivot.y)
-          pivotWx = drawing.x + drawing.pivot.x;
-          pivotWy = drawing.y + drawing.pivot.y;
-        } else {
-          // No pivot placed — rotate around visual bounding-box center
-          const bb = getDrawingBoundingBox(drawing);
-          if (bb) {
-            const t = getDrawingTransform(drawing);
-            const pw = localToWorld(bb.cx, bb.cy, t);
-            pivotWx = pw.x;
-            pivotWy = pw.y;
-          } else {
-            pivotWx = drawing.x;
-            pivotWy = drawing.y;
-          }
-        }
+        // Rotation center: active pivot first, then first locked pivot, then main pivot.
+        // localToWorld keeps the exact clicked/locked pivot point pinned as the origin.
+        const pivotWorld = getPrimaryPivotWorld(drawing);
+        const pivotWx = pivotWorld.x;
+        const pivotWy = pivotWorld.y;
         const angle = Math.atan2(wy - pivotWy, wx - pivotWx) * 180 / Math.PI;
         const startAngle = Math.atan2(cs.dragStartY - pivotWy, cs.dragStartX - pivotWx) * 180 / Math.PI;
         st.setDrawingTransform(
@@ -1074,10 +1123,11 @@ function renderBonesOverlay(
   panX: number,
   panY: number,
   boneConnectionStart: string | null,
-  boneLineEnd: { x: number; y: number }
+  boneLineEnd: { x: number; y: number },
+  handleSize = 48
 ) {
   const t = getDrawingTransform(drawing);
-  const bs = 14 / zoom;
+  const bs = Math.max(handleSize * 0.65, 28) / zoom;
 
   ctx.save();
   ctx.translate(panX, panY);
