@@ -938,7 +938,7 @@ export const useAnimationStore = create<AppState & AnimationActions>()(
       },
 
       setZoom: (zoom) => {
-        set((state) => { state.zoom = Math.max(0.1, Math.min(10, zoom)); });
+        set((state) => { state.zoom = Math.max(0.05, Math.min(40, zoom)); });
       },
 
       setPan: (x, y) => {

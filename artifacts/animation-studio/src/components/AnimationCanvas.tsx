@@ -475,7 +475,7 @@ const AnimationCanvas: React.FC = () => {
           strokes: [],
           strokeColor: st.strokeColor,
           strokeWidth: st.strokeWidth,
-          fillColor: null,
+          fillColor: null, // no auto-fill for pen drawings
           x: 0, y: 0,
         });
         const strokeId = generateId();
@@ -491,13 +491,13 @@ const AnimationCanvas: React.FC = () => {
         return;
       }
 
-      // Start new drawing
+      // Start new drawing — pen/brush get no auto-fill by default
       const newDrawingId = st.addDrawing({
         name: `Drawing ${Object.keys(st.drawings).length + 1}`,
         strokes: [],
         strokeColor: st.strokeColor,
         strokeWidth: st.strokeWidth,
-        fillColor: st.fillColor,
+        fillColor: null,
         x: 0, y: 0,
       });
       const strokeId = generateId();
@@ -587,10 +587,26 @@ const AnimationCanvas: React.FC = () => {
           );
         }
       } else if (cs.dragHandle === "rotate") {
-        // Use the active pivot as rotation center — it always stays fixed in world space
-        // World position of pivot = (drawing.x + drawing.pivot.x, drawing.y + drawing.pivot.y)
-        const pivotWx = drawing.x + drawing.pivot.x;
-        const pivotWy = drawing.y + drawing.pivot.y;
+        // Rotation center: use active pivot if set, else use visual bounding-box center
+        let pivotWx: number;
+        let pivotWy: number;
+        if (drawing.activePivotId) {
+          // User placed a pivot — stays fixed at (x + pivot.x, y + pivot.y)
+          pivotWx = drawing.x + drawing.pivot.x;
+          pivotWy = drawing.y + drawing.pivot.y;
+        } else {
+          // No pivot placed — rotate around visual bounding-box center
+          const bb = getDrawingBoundingBox(drawing);
+          if (bb) {
+            const t = getDrawingTransform(drawing);
+            const pw = localToWorld(bb.cx, bb.cy, t);
+            pivotWx = pw.x;
+            pivotWy = pw.y;
+          } else {
+            pivotWx = drawing.x;
+            pivotWy = drawing.y;
+          }
+        }
         const angle = Math.atan2(wy - pivotWy, wx - pivotWx) * 180 / Math.PI;
         const startAngle = Math.atan2(cs.dragStartY - pivotWy, cs.dragStartX - pivotWx) * 180 / Math.PI;
         st.setDrawingTransform(

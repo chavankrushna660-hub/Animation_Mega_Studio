@@ -6,9 +6,27 @@ import AnimationCanvas from "../components/AnimationCanvas";
 import Timeline from "../components/Timeline";
 import Toast from "../components/Toast";
 import { useAnimationStore } from "../store/useAnimationStore";
+import { getEffectiveDrawing, getDrawingBoundingBox } from "../utils/helpers";
+import { localToWorld, getDrawingTransform } from "../utils/geometry";
 
 const AnimationStudio: React.FC = () => {
   const store = useAnimationStore();
+
+  const handleCenterOnCanvas = () => {
+    const selId = store.selection.drawingId;
+    if (!selId) return;
+    const drawing = getEffectiveDrawing(store.drawings, store.frames, selId, store.currentFrameIndex);
+    if (!drawing) return;
+    const bb = getDrawingBoundingBox(drawing);
+    if (!bb) return;
+    const t = getDrawingTransform(drawing);
+    const worldCenter = localToWorld(bb.cx, bb.cy, t);
+    const canvasCenterX = (store.canvasWidth ?? 1280) / 2;
+    const canvasCenterY = (store.canvasHeight ?? 720) / 2;
+    const dx = canvasCenterX - worldCenter.x;
+    const dy = canvasCenterY - worldCenter.y;
+    store.moveDrawing(selId, dx, dy);
+  };
 
   return (
     <div className="flex flex-col h-screen w-screen bg-gray-200 overflow-hidden select-none">
@@ -37,14 +55,23 @@ const AnimationStudio: React.FC = () => {
         {/* Canvas area */}
         <div className="flex-1 relative overflow-hidden bg-gray-300 min-w-0">
           {/* Canvas info bar */}
-          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 bg-white/80 backdrop-blur-sm rounded-full px-3 py-1 shadow text-xs text-gray-600 pointer-events-none">
-            <span>Tool: <strong>{store.activeTool}</strong></span>
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 bg-white/90 backdrop-blur-sm rounded-full px-3 py-1 shadow text-xs text-gray-600">
+            <span className="pointer-events-none">Tool: <strong>{store.activeTool}</strong></span>
             {store.selection.drawingId && (
-              <span>Selected: <strong className="text-blue-700">
+              <span className="pointer-events-none">Selected: <strong className="text-blue-700">
                 {store.drawings[store.selection.drawingId]?.name ?? "Drawing"}
               </strong></span>
             )}
-            <span>{store.currentFrameIndex + 1}/{store.frames.length}</span>
+            <span className="pointer-events-none">{store.currentFrameIndex + 1}/{store.frames.length}</span>
+            {store.selection.drawingId && (
+              <button
+                onClick={handleCenterOnCanvas}
+                className="ml-1 bg-blue-600 text-white rounded-full px-2.5 py-0.5 text-[10px] font-bold hover:bg-blue-700 transition-colors"
+                title="Move selected drawing to canvas center"
+              >
+                ⊙ Center
+              </button>
+            )}
           </div>
 
           {/* Deselect hint */}
