@@ -262,4 +262,7 @@ export interface AppState {
   exportWidth: number;
   exportHeight: number;
   exportFps: number;
+
+  // Toast notifications
+  toast: { message: string; id: string } | null;
 }

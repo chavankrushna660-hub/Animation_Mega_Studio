@@ -2,7 +2,37 @@ import React, { useRef, useEffect, useCallback, useState } from "react";
 import { useAnimationStore } from "../store/useAnimationStore";
 import { getEffectiveDrawing, generateId, getDrawingBoundingBox, isPathClosed, degToRad } from "../utils/helpers";
 import { hitTestStroke, hitTestDrawing, canvasToWorld, worldToLocal, localToWorld, getDrawingTransform, getTransformHandles, hitTestHandle } from "../utils/geometry";
-import type { Drawing, DrawingStroke, Point, HandleType } from "../types";
+import type { Drawing, DrawingStroke, Point, HandleType, AppState } from "../types";
+
+// Collects initial {x, y} positions of all group members (root parent + all descendants)
+// Used to move the entire group together during drag
+function collectGroupPositions(
+  drawingId: string,
+  st: Pick<AppState, "drawings" | "frames" | "currentFrameIndex">
+): Record<string, { x: number; y: number }> {
+  const drawings = st.drawings;
+  const frames = st.frames;
+  const frameIndex = st.currentFrameIndex;
+
+  // Walk up to the root parent
+  let rootId = drawingId;
+  let depth = 0;
+  while (drawings[rootId]?.parentId && depth < 50) {
+    rootId = drawings[rootId].parentId!;
+    depth++;
+  }
+
+  // Collect all group members (root + all descendants) recursively
+  const positions: Record<string, { x: number; y: number }> = {};
+  function collect(id: string) {
+    const eff = getEffectiveDrawing(drawings, frames, id, frameIndex);
+    if (!eff) return;
+    positions[id] = { x: eff.x, y: eff.y };
+    drawings[id]?.childIds.forEach(collect);
+  }
+  collect(rootId);
+  return positions;
+}
 
 interface CanvasState {
   isDrawing: boolean;
@@ -12,6 +42,8 @@ interface CanvasState {
   dragStartX: number;
   dragStartY: number;
   dragStartDrawing: { x: number; y: number; rotation: number; scaleX: number; scaleY: number } | null;
+  // Initial positions of entire group for bidirectional move
+  dragGroupInitialPositions: Record<string, { x: number; y: number }> | null;
   isPanning: boolean;
   panStartX: number;
   panStartY: number;
@@ -44,6 +76,7 @@ const AnimationCanvas: React.FC = () => {
     dragStartX: 0,
     dragStartY: 0,
     dragStartDrawing: null,
+    dragGroupInitialPositions: null,
     isPanning: false,
     panStartX: 0,
     panStartY: 0,
@@ -265,19 +298,27 @@ const AnimationCanvas: React.FC = () => {
           const handles = getTransformHandles(drawing, st.transformHandleSize / st.zoom);
           const hitHandle = hitTestHandle(wx, wy, handles, st.transformHandleSize / st.zoom);
           if (hitHandle) {
+            // For move drag, collect the positions of the entire parent-child group
+            let groupPositions: Record<string, { x: number; y: number }> | null = null;
+            if (hitHandle.type === "move") {
+              groupPositions = collectGroupPositions(selId, st);
+            }
             setCsState((s) => ({
               ...s, isDragging: true, dragHandle: hitHandle.type,
               dragStartX: wx, dragStartY: wy,
               dragStartDrawing: { x: drawing.x, y: drawing.y, rotation: drawing.rotation, scaleX: drawing.scaleX, scaleY: drawing.scaleY },
+              dragGroupInitialPositions: groupPositions,
             }));
             return;
           }
           // Check if inside drawing for move
           if (hitTestStroke(wx, wy, drawing, 10 / st.zoom) || hitTestDrawing(wx, wy, drawing, 5 / st.zoom)) {
+            const groupPositions = collectGroupPositions(selId, st);
             setCsState((s) => ({
               ...s, isDragging: true, dragHandle: "move",
               dragStartX: wx, dragStartY: wy,
               dragStartDrawing: { x: drawing.x, y: drawing.y, rotation: drawing.rotation, scaleX: drawing.scaleX, scaleY: drawing.scaleY },
+              dragGroupInitialPositions: groupPositions,
             }));
             return;
           }
@@ -388,9 +429,12 @@ const AnimationCanvas: React.FC = () => {
       return;
     }
 
-    // Shape tools
+    // Shape tools — blocked when a drawing is selected
     if (["rect", "circle", "triangle", "line"].includes(tool)) {
-      if (selId) return; // Don't draw if something selected (unless you explicitly want to)
+      if (selId) {
+        st.showToast("Shape blocked — click the drawing 3× to deselect it first");
+        return;
+      }
       setCsState((s) => ({ ...s, isShapeDrawing: true, shapeStartX: wx, shapeStartY: wy }));
       return;
     }
@@ -413,11 +457,10 @@ const AnimationCanvas: React.FC = () => {
       return;
     }
 
-    // Drawing tools - only if no drawing selected OR drawing is selected (draw on it)
+    // Drawing tools — blocked when a drawing is selected
     if (["pen", "brush", "eraser", "paintBrush", "continuesDraw"].includes(tool)) {
       if (selId) {
-        // Drawing is selected - tools apply to it (EXCEPT when selection is active, we don't draw unless unselected)
-        // Per requirements: jabtak drawing selected hai, draw nahi hoga
+        st.showToast("Drawing blocked — click the drawing 3× to deselect it first");
         return;
       }
 
@@ -525,38 +568,37 @@ const AnimationCanvas: React.FC = () => {
       const dy = wy - cs.dragStartY;
 
       if (cs.dragHandle === "move") {
-        st.setDrawingTransform(
-          st.selection.drawingId,
-          cs.dragStartDrawing.x + dx,
-          cs.dragStartDrawing.y + dy,
-          drawing.rotation,
-          drawing.scaleX,
-          drawing.scaleY
-        );
-        // Move children too
-        drawing.childIds.forEach((childId) => {
-          const child = st.drawings[childId];
-          if (child) {
-            const childFrame = st.frames[st.currentFrameIndex]?.drawingStates[childId];
-            const baseX = childFrame ? childFrame.x : child.x;
-            const baseY = childFrame ? childFrame.y : child.y;
-            // Children have been moved relatively since dragStart
-          }
-        });
-      } else if (cs.dragHandle === "rotate") {
-        const bb = getDrawingBoundingBox(drawing);
-        if (bb) {
-          const t = getDrawingTransform(drawing);
-          const pivotW = localToWorld(bb.cx, bb.cy, t);
-          const angle = Math.atan2(wy - pivotW.y, wx - pivotW.x) * 180 / Math.PI;
-          const startAngle = Math.atan2(cs.dragStartY - pivotW.y, cs.dragStartX - pivotW.x) * 180 / Math.PI;
+        // Move the entire parent-child group together (bidirectional)
+        if (cs.dragGroupInitialPositions) {
+          const newPositions: Record<string, { x: number; y: number }> = {};
+          Object.entries(cs.dragGroupInitialPositions).forEach(([id, pos]) => {
+            newPositions[id] = { x: pos.x + dx, y: pos.y + dy };
+          });
+          st.setPositionsAbsolute(newPositions);
+        } else {
+          // Fallback: move only the selected drawing
           st.setDrawingTransform(
             st.selection.drawingId,
-            drawing.x, drawing.y,
-            cs.dragStartDrawing.rotation + (angle - startAngle),
-            drawing.scaleX, drawing.scaleY
+            cs.dragStartDrawing.x + dx,
+            cs.dragStartDrawing.y + dy,
+            drawing.rotation,
+            drawing.scaleX,
+            drawing.scaleY
           );
         }
+      } else if (cs.dragHandle === "rotate") {
+        // Use the active pivot as rotation center — it always stays fixed in world space
+        // World position of pivot = (drawing.x + drawing.pivot.x, drawing.y + drawing.pivot.y)
+        const pivotWx = drawing.x + drawing.pivot.x;
+        const pivotWy = drawing.y + drawing.pivot.y;
+        const angle = Math.atan2(wy - pivotWy, wx - pivotWx) * 180 / Math.PI;
+        const startAngle = Math.atan2(cs.dragStartY - pivotWy, cs.dragStartX - pivotWx) * 180 / Math.PI;
+        st.setDrawingTransform(
+          st.selection.drawingId,
+          drawing.x, drawing.y,
+          cs.dragStartDrawing.rotation + (angle - startAngle),
+          drawing.scaleX, drawing.scaleY
+        );
       } else if (["tl", "tr", "bl", "br", "mt", "mb", "ml", "mr"].includes(cs.dragHandle ?? "")) {
         const bb = getDrawingBoundingBox(drawing);
         if (bb) {
@@ -615,21 +657,13 @@ const AnimationCanvas: React.FC = () => {
     }
 
     if (cs.isDragging) {
-      setCsState((s) => ({ ...s, isDragging: false, dragHandle: null, dragStartDrawing: null }));
-      // Move children along with parent
-      if (st.selection.drawingId) {
-        const drawing = getEffectiveDrawing(st.drawings, st.frames, st.selection.drawingId, st.currentFrameIndex);
-        if (drawing && cs.dragHandle === "move" && cs.dragStartDrawing) {
-          const dx = drawing.x - cs.dragStartDrawing.x;
-          const dy = drawing.y - cs.dragStartDrawing.y;
-          drawing.childIds.forEach((childId) => {
-            const child = getEffectiveDrawing(st.drawings, st.frames, childId, st.currentFrameIndex);
-            if (child) {
-              st.setDrawingTransform(childId, child.x + dx, child.y + dy, child.rotation, child.scaleX, child.scaleY);
-            }
-          });
-        }
-      }
+      setCsState((s) => ({
+        ...s,
+        isDragging: false,
+        dragHandle: null,
+        dragStartDrawing: null,
+        dragGroupInitialPositions: null,
+      }));
       return;
     }
 

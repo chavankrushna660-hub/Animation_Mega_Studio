@@ -4,6 +4,7 @@ import LeftPanel from "../components/LeftPanel";
 import RightPanel from "../components/RightPanel";
 import AnimationCanvas from "../components/AnimationCanvas";
 import Timeline from "../components/Timeline";
+import Toast from "../components/Toast";
 import { useAnimationStore } from "../store/useAnimationStore";
 
 const AnimationStudio: React.FC = () => {
@@ -76,6 +77,9 @@ const AnimationStudio: React.FC = () => {
 
       {/* Timeline */}
       <Timeline />
+
+      {/* Toast notifications */}
+      <Toast />
     </div>
   );
 };

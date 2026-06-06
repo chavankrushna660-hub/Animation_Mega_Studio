@@ -110,6 +110,13 @@ interface AnimationActions {
   // Reorder drawings
   reorderDrawing: (fromIndex: number, toIndex: number, layerId: string) => void;
   moveDrawingToLayer: (drawingId: string, layerId: string) => void;
+
+  // Toast
+  showToast: (message: string) => void;
+  dismissToast: () => void;
+
+  // Group move (sets absolute positions for multiple drawings at once)
+  setPositionsAbsolute: (positions: Record<string, { x: number; y: number }>) => void;
 }
 
 const initialSelectionState: SelectionState = {
@@ -162,6 +169,7 @@ export const useAnimationStore = create<AppState & AnimationActions>()(
       currentFrameIndex: 0,
       fps: 12,
       isPlaying: false,
+      toast: null,
       activeTool: "pen",
       previousTool: null,
       strokeColor: "#000000",
@@ -570,39 +578,42 @@ export const useAnimationStore = create<AppState & AnimationActions>()(
       moveDrawing: (id, dx, dy, frameIndex) => {
         const fi = frameIndex ?? get().currentFrameIndex;
         set((state) => {
-          const drawing = state.drawings[id];
-          if (!drawing || drawing.locked) return;
-          drawing.x += dx;
-          drawing.y += dy;
-          const frame = state.frames[fi];
-          if (frame && frame.drawingStates[id]) {
-            frame.drawingStates[id].x = drawing.x;
-            frame.drawingStates[id].y = drawing.y;
+          // Helper: find root of the parent-child group
+          function getRootId(drawingId: string, depth = 0): string {
+            const d = state.drawings[drawingId];
+            if (!d || !d.parentId || depth > 50) return drawingId;
+            return getRootId(d.parentId, depth + 1);
           }
-          // Move children
-          drawing.childIds.forEach((childId) => {
-            const child = state.drawings[childId];
-            if (child && !child.locked) {
-              child.x += dx;
-              child.y += dy;
-              if (frame && frame.drawingStates[childId]) {
-                frame.drawingStates[childId].x = child.x;
-                frame.drawingStates[childId].y = child.y;
-              }
+          // Helper: collect all descendant IDs from root
+          function collectGroup(drawingId: string): string[] {
+            const d = state.drawings[drawingId];
+            if (!d) return [];
+            return [drawingId, ...d.childIds.flatMap(collectGroup)];
+          }
+
+          const rootId = getRootId(id);
+          const allMembers = collectGroup(rootId);
+          const frame = state.frames[fi];
+
+          // Also include keepAttachedTo targets
+          const extra: string[] = [];
+          allMembers.forEach((mid) => {
+            const d = state.drawings[mid];
+            if (d?.keepAttachedToId && !allMembers.includes(d.keepAttachedToId)) {
+              extra.push(d.keepAttachedToId);
             }
           });
-          // Move attached drawing
-          if (drawing.keepAttachedToId) {
-            const attached = state.drawings[drawing.keepAttachedToId];
-            if (attached && !attached.locked) {
-              attached.x += dx;
-              attached.y += dy;
-              if (frame && frame.drawingStates[drawing.keepAttachedToId]) {
-                frame.drawingStates[drawing.keepAttachedToId].x = attached.x;
-                frame.drawingStates[drawing.keepAttachedToId].y = attached.y;
-              }
+
+          [...allMembers, ...extra].forEach((memberId) => {
+            const d = state.drawings[memberId];
+            if (!d || d.locked) return;
+            d.x += dx;
+            d.y += dy;
+            if (frame && frame.drawingStates[memberId]) {
+              frame.drawingStates[memberId].x = d.x;
+              frame.drawingStates[memberId].y = d.y;
             }
-          }
+          });
         });
       },
 
@@ -1019,12 +1030,37 @@ export const useAnimationStore = create<AppState & AnimationActions>()(
 
       moveDrawingToLayer: (drawingId, layerId) => {
         set((state) => {
-          // Remove from current layer
           state.layers.forEach((l) => {
             l.drawingIds = l.drawingIds.filter((id) => id !== drawingId);
           });
           const targetLayer = state.layers.find((l) => l.id === layerId);
           if (targetLayer) targetLayer.drawingIds.push(drawingId);
+        });
+      },
+
+      showToast: (message) => {
+        set((state) => {
+          state.toast = { message, id: generateId() };
+        });
+      },
+
+      dismissToast: () => {
+        set((state) => { state.toast = null; });
+      },
+
+      setPositionsAbsolute: (positions) => {
+        set((state) => {
+          const frame = state.frames[state.currentFrameIndex];
+          Object.entries(positions).forEach(([id, pos]) => {
+            const d = state.drawings[id];
+            if (!d || d.locked) return;
+            d.x = pos.x;
+            d.y = pos.y;
+            if (frame && frame.drawingStates[id]) {
+              frame.drawingStates[id].x = pos.x;
+              frame.drawingStates[id].y = pos.y;
+            }
+          });
         });
       },
     };
