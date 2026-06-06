@@ -14,6 +14,7 @@ import type {
   SelectionState,
 } from "../types";
 import { generateId, createDefaultFrame, createDefaultLayer, createDefaultDrawing } from "../utils/helpers";
+import { findBucketFillTarget, makeFillStroke, removeExistingFillAtPoint } from "../utils/bucketFill";
 
 interface AnimationActions {
   // Drawing management
@@ -910,25 +911,43 @@ export const useAnimationStore = create<AppState & AnimationActions>()(
       },
 
       fillColorRegion: (drawingId, x, y) => {
-        // This is handled in the canvas renderer via flood fill
         set((state) => {
           const drawing = state.drawings[drawingId];
           if (!drawing) return;
-          // Add a fill stroke at position
-          const stroke: DrawingStroke = {
-            id: generateId(),
-            points: [{ x, y }],
-            color: state.fillColor,
-            width: 0,
-            opacity: state.brushOpacity,
-            tool: "pen",
-            fillRegion: { color: state.fillColor, opacity: state.brushOpacity },
-          };
-          drawing.strokes.push(stroke);
+
+          const target = findBucketFillTarget(drawing, { x, y });
           const frame = state.frames[state.currentFrameIndex];
-          if (frame && frame.drawingStates[drawingId]) {
-            frame.drawingStates[drawingId].strokes.push(stroke);
+
+          if (target.kind === "shape") {
+            // Closed vector shapes have a single real fill region.
+            drawing.fillColor = state.fillColor;
+            drawing.fillOpacity = state.brushOpacity;
+            state.toast = { id: generateId(), message: "Bucket filled closed shape." };
+            return;
           }
+
+          if (target.kind === "stroke" && target.stroke) {
+            // Closed freehand strokes receive a true vector fill polygon, not a dot.
+            const fillStroke = makeFillStroke(target.stroke, state.fillColor, state.brushOpacity);
+            drawing.strokes = removeExistingFillAtPoint(drawing.strokes, { x, y });
+            drawing.strokes.unshift(fillStroke);
+            if (frame && frame.drawingStates[drawingId]) {
+              frame.drawingStates[drawingId].strokes = JSON.parse(JSON.stringify(drawing.strokes));
+            }
+            state.toast = { id: generateId(), message: "Bucket filled closed drawing area." };
+            return;
+          }
+
+          // Strict rule: if the boundary is not closed, do NOT flood the canvas.
+          // Instead, color only the selected drawing's visible line work.
+          drawing.strokeColor = state.fillColor;
+          drawing.strokes = drawing.strokes.map((stroke) => (
+            stroke.fillRegion || stroke.tool === "eraser" ? stroke : { ...stroke, color: state.fillColor }
+          ));
+          if (frame && frame.drawingStates[drawingId]) {
+            frame.drawingStates[drawingId].strokes = JSON.parse(JSON.stringify(drawing.strokes));
+          }
+          state.toast = { id: generateId(), message: "Open drawing: colored lines only. Close the edge to bucket fill inside." };
         });
       },
 

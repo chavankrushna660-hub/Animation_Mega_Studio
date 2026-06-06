@@ -44,7 +44,7 @@ export function createDefaultDrawing(id: string, partial: Partial<Drawing> = {})
     activePivotId: partial.activePivotId ?? null,
     strokeColor: partial.strokeColor ?? "#000000",
     strokeWidth: partial.strokeWidth ?? 3,
-    fillColor: partial.fillColor ?? "#000000",
+    fillColor: partial.fillColor ?? null,
     fillOpacity: partial.fillOpacity ?? 1,
     opacity: partial.opacity ?? 1,
     parentId: partial.parentId ?? null,

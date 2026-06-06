@@ -458,7 +458,10 @@ const AnimationCanvas: React.FC = () => {
     }
 
     if (tool === "fill") {
-      if (!selId) return;
+      if (!selId) {
+        st.showToast("Bucket fill needs a selected drawing first.");
+        return;
+      }
       const drawing = getEffectiveDrawing(st.drawings, st.frames, selId, st.currentFrameIndex);
       if (!drawing) return;
       const t = getDrawingTransform(drawing);
@@ -936,9 +939,22 @@ function renderSingleDrawing(
   for (const stroke of drawing.strokes) {
     if (stroke.fillRegion) {
       ctx.fillStyle = stroke.fillRegion.color;
+      ctx.globalAlpha *= stroke.fillRegion.opacity;
       ctx.beginPath();
-      ctx.arc(stroke.points[0]?.x ?? 0, stroke.points[0]?.y ?? 0, 3, 0, Math.PI * 2);
+      if (stroke.points.length > 2) {
+        ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+        for (let i = 1; i < stroke.points.length - 1; i++) {
+          const mx = (stroke.points[i].x + stroke.points[i + 1].x) / 2;
+          const my = (stroke.points[i].y + stroke.points[i + 1].y) / 2;
+          ctx.quadraticCurveTo(stroke.points[i].x, stroke.points[i].y, mx, my);
+        }
+        ctx.lineTo(stroke.points[stroke.points.length - 1].x, stroke.points[stroke.points.length - 1].y);
+        ctx.closePath();
+      } else {
+        ctx.arc(stroke.points[0]?.x ?? 0, stroke.points[0]?.y ?? 0, 3, 0, Math.PI * 2);
+      }
       ctx.fill();
+      ctx.globalAlpha = 1;
       continue;
     }
 
