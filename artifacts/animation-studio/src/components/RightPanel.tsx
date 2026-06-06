@@ -56,10 +56,10 @@ const RightPanel: React.FC = () => {
               <>
                 <Section title="Position">
                   <Row label="X">
-                    <NumInput value={Math.round(drawing.x)} onChange={(v) => store.updateDrawing(selectedId!, { x: v })} step={5} />
+                    <NumInput value={Math.round(drawing.x)} onChange={(v) => store.moveDrawing(selectedId!, v - drawing.x, 0)} step={5} />
                   </Row>
                   <Row label="Y">
-                    <NumInput value={Math.round(drawing.y)} onChange={(v) => store.updateDrawing(selectedId!, { y: v })} step={5} />
+                    <NumInput value={Math.round(drawing.y)} onChange={(v) => store.moveDrawing(selectedId!, 0, v - drawing.y)} step={5} />
                   </Row>
                 </Section>
 
@@ -123,13 +123,13 @@ const RightPanel: React.FC = () => {
 
             <Section title="Transform Handle Size">
               <Row label="Size">
-                <NumInput value={store.transformHandleSize} onChange={(v) => store.setTransformHandleSize(v)} step={5} min={10} max={100} />
+                <NumInput value={store.transformHandleSize} onChange={(v) => store.setTransformHandleSize(v)} step={10} min={8} max={1000} />
               </Row>
               <div className="flex gap-1">
-                <button className="flex-1 text-xs bg-blue-100 text-blue-700 rounded py-0.5 hover:bg-blue-200" onClick={() => store.setTransformHandleSize(store.transformHandleSize - 5)}>Smaller</button>
-                <button className="flex-1 text-xs bg-blue-100 text-blue-700 rounded py-0.5 hover:bg-blue-200" onClick={() => store.setTransformHandleSize(store.transformHandleSize + 5)}>Larger</button>
+                <button className="flex-1 text-xs bg-blue-100 text-blue-700 rounded py-0.5 hover:bg-blue-200" onClick={() => store.setTransformHandleSize(store.transformHandleSize - 10)}>Smaller</button>
+                <button className="flex-1 text-xs bg-blue-100 text-blue-700 rounded py-0.5 hover:bg-blue-200" onClick={() => store.setTransformHandleSize(store.transformHandleSize + 10)}>Larger</button>
               </div>
-              <div className="text-xs text-gray-400">Current: {store.transformHandleSize}px</div>
+              <div className="text-xs text-gray-400">Current: {store.transformHandleSize}px (8–1000px, touch-safe)</div>
             </Section>
           </div>
         )}
@@ -318,7 +318,7 @@ const RightPanel: React.FC = () => {
                         <div className="flex gap-1">
                           <button
                             className="flex-1 text-xs bg-yellow-100 text-yellow-700 rounded py-0.5 hover:bg-yellow-200"
-                            onClick={() => store.setBoneConnectionSource(bone.id)}
+                            onClick={() => { store.setActiveTool("bone"); store.setBoneConnectionSource(bone.id); }}
                           >Start Connection</button>
                           {bone.connectedToBoneId && (
                             <button
