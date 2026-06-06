@@ -282,10 +282,10 @@ const LeftPanel: React.FC = () => {
                   type="number"
                   className="flex-1 border rounded px-1 py-0.5 text-xs"
                   value={Math.round(drawing.x)}
-                  onChange={(e) => store.updateDrawing(store.selection.drawingId!, { x: Number(e.target.value) })}
+                  onChange={(e) => store.moveDrawing(store.selection.drawingId!, Number(e.target.value) - drawing.x, 0)}
                 />
-                <button className="text-gray-400 hover:text-gray-700 px-0.5" onClick={() => store.updateDrawing(store.selection.drawingId!, { x: drawing.x - 5 })}>◀</button>
-                <button className="text-gray-400 hover:text-gray-700 px-0.5" onClick={() => store.updateDrawing(store.selection.drawingId!, { x: drawing.x + 5 })}>▶</button>
+                <button className="text-gray-400 hover:text-gray-700 px-0.5" onClick={() => store.moveDrawing(store.selection.drawingId!, -5, 0)}>◀</button>
+                <button className="text-gray-400 hover:text-gray-700 px-0.5" onClick={() => store.moveDrawing(store.selection.drawingId!, 5, 0)}>▶</button>
               </div>
               <div className="flex items-center gap-1 text-xs">
                 <span className="text-gray-500 w-10">Y:</span>
@@ -293,10 +293,10 @@ const LeftPanel: React.FC = () => {
                   type="number"
                   className="flex-1 border rounded px-1 py-0.5 text-xs"
                   value={Math.round(drawing.y)}
-                  onChange={(e) => store.updateDrawing(store.selection.drawingId!, { y: Number(e.target.value) })}
+                  onChange={(e) => store.moveDrawing(store.selection.drawingId!, 0, Number(e.target.value) - drawing.y)}
                 />
-                <button className="text-gray-400 hover:text-gray-700 px-0.5" onClick={() => store.updateDrawing(store.selection.drawingId!, { y: drawing.y - 5 })}>▲</button>
-                <button className="text-gray-400 hover:text-gray-700 px-0.5" onClick={() => store.updateDrawing(store.selection.drawingId!, { y: drawing.y + 5 })}>▼</button>
+                <button className="text-gray-400 hover:text-gray-700 px-0.5" onClick={() => store.moveDrawing(store.selection.drawingId!, 0, -5)}>▲</button>
+                <button className="text-gray-400 hover:text-gray-700 px-0.5" onClick={() => store.moveDrawing(store.selection.drawingId!, 0, 5)}>▼</button>
               </div>
               <div className="flex items-center gap-1 text-xs">
                 <span className="text-gray-500 w-10">Rot:</span>

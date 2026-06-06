@@ -14,6 +14,7 @@ import type {
   SelectionState,
 } from "../types";
 import { generateId, createDefaultFrame, createDefaultLayer, createDefaultDrawing } from "../utils/helpers";
+import { findBucketFillTarget, makeFillStroke, removeExistingFillAtPoint } from "../utils/bucketFill";
 
 interface AnimationActions {
   // Drawing management
@@ -190,7 +191,7 @@ export const useAnimationStore = create<AppState & AnimationActions>()(
       onionPrevFrames: 1,
       onionNextFrames: 1,
       showRulers: false,
-      transformHandleSize: 20,
+      transformHandleSize: 48,
       continuesDrawing: false,
       boneConnectionSource: null,
       playbackStartFrame: 0,
@@ -578,33 +579,39 @@ export const useAnimationStore = create<AppState & AnimationActions>()(
       moveDrawing: (id, dx, dy, frameIndex) => {
         const fi = frameIndex ?? get().currentFrameIndex;
         set((state) => {
-          // Helper: find root of the parent-child group
-          function getRootId(drawingId: string, depth = 0): string {
-            const d = state.drawings[drawingId];
-            if (!d || !d.parentId || depth > 50) return drawingId;
-            return getRootId(d.parentId, depth + 1);
-          }
-          // Helper: collect all descendant IDs from root
-          function collectGroup(drawingId: string): string[] {
-            const d = state.drawings[drawingId];
-            if (!d) return [];
-            return [drawingId, ...d.childIds.flatMap(collectGroup)];
-          }
-
-          const rootId = getRootId(id);
-          const allMembers = collectGroup(rootId);
-          const frame = state.frames[fi];
-
-          // Also include keepAttachedTo targets
-          const extra: string[] = [];
-          allMembers.forEach((mid) => {
-            const d = state.drawings[mid];
-            if (d?.keepAttachedToId && !allMembers.includes(d.keepAttachedToId)) {
-              extra.push(d.keepAttachedToId);
+          const visited = new Set<string>();
+          const queue = [id];
+          const add = (candidateId: string | null | undefined) => {
+            if (candidateId && state.drawings[candidateId] && !visited.has(candidateId)) {
+              queue.push(candidateId);
             }
-          });
+          };
 
-          [...allMembers, ...extra].forEach((memberId) => {
+          while (queue.length > 0) {
+            const memberId = queue.shift()!;
+            if (visited.has(memberId) || !state.drawings[memberId]) continue;
+            visited.add(memberId);
+            const drawing = state.drawings[memberId];
+
+            add(drawing.parentId);
+            drawing.childIds.forEach(add);
+            add(drawing.keepAttachedToId);
+            Object.values(state.drawings).forEach((candidate) => {
+              if (candidate.keepAttachedToId === memberId) add(candidate.id);
+            });
+
+            const boneIds = new Set(drawing.bones.map((bone) => bone.id));
+            Object.values(state.drawings).forEach((candidate) => {
+              const connectedByBone = candidate.bones.some((bone) =>
+                (bone.connectedToBoneId && boneIds.has(bone.connectedToBoneId)) ||
+                drawing.bones.some((sourceBone) => sourceBone.connectedToBoneId === bone.id)
+              );
+              if (connectedByBone) add(candidate.id);
+            });
+          }
+
+          const frame = state.frames[fi];
+          visited.forEach((memberId) => {
             const d = state.drawings[memberId];
             if (!d || d.locked) return;
             d.x += dx;
@@ -817,7 +824,11 @@ export const useAnimationStore = create<AppState & AnimationActions>()(
             const targetDrawing = state.drawings[targetDrawingId];
             const sourceDrawing = state.drawings[sourceDrawingId];
             if (targetDrawing && sourceDrawing) {
+              // Bone connection = permanent rig relationship: source drawing becomes parent,
+              // target drawing becomes child, and both are marked keep-attached so move
+              // operations can never detach the rig accidentally.
               targetDrawing.parentId = sourceDrawingId;
+              targetDrawing.keepAttachedToId = sourceDrawingId;
               if (!sourceDrawing.childIds.includes(targetDrawingId)) {
                 sourceDrawing.childIds.push(targetDrawingId);
               }
@@ -843,7 +854,15 @@ export const useAnimationStore = create<AppState & AnimationActions>()(
             );
           }
 
+          // Prevent accidental cycles (a parent cannot be one of its own descendants).
+          let cursor = parentId;
+          while (cursor) {
+            if (cursor === childId) return;
+            cursor = state.drawings[cursor]?.parentId ?? null;
+          }
+
           child.parentId = parentId;
+          child.keepAttachedToId = parentId;
 
           if (parentId && state.drawings[parentId]) {
             if (!state.drawings[parentId].childIds.includes(childId)) {
@@ -892,25 +911,43 @@ export const useAnimationStore = create<AppState & AnimationActions>()(
       },
 
       fillColorRegion: (drawingId, x, y) => {
-        // This is handled in the canvas renderer via flood fill
         set((state) => {
           const drawing = state.drawings[drawingId];
           if (!drawing) return;
-          // Add a fill stroke at position
-          const stroke: DrawingStroke = {
-            id: generateId(),
-            points: [{ x, y }],
-            color: state.fillColor,
-            width: 0,
-            opacity: state.brushOpacity,
-            tool: "pen",
-            fillRegion: { color: state.fillColor, opacity: state.brushOpacity },
-          };
-          drawing.strokes.push(stroke);
+
+          const target = findBucketFillTarget(drawing, { x, y });
           const frame = state.frames[state.currentFrameIndex];
-          if (frame && frame.drawingStates[drawingId]) {
-            frame.drawingStates[drawingId].strokes.push(stroke);
+
+          if (target.kind === "shape") {
+            // Closed vector shapes have a single real fill region.
+            drawing.fillColor = state.fillColor;
+            drawing.fillOpacity = state.brushOpacity;
+            state.toast = { id: generateId(), message: "Bucket filled closed shape." };
+            return;
           }
+
+          if (target.kind === "stroke" && target.stroke) {
+            // Closed freehand strokes receive a true vector fill polygon, not a dot.
+            const fillStroke = makeFillStroke(target.stroke, state.fillColor, state.brushOpacity);
+            drawing.strokes = removeExistingFillAtPoint(drawing.strokes, { x, y });
+            drawing.strokes.unshift(fillStroke);
+            if (frame && frame.drawingStates[drawingId]) {
+              frame.drawingStates[drawingId].strokes = JSON.parse(JSON.stringify(drawing.strokes));
+            }
+            state.toast = { id: generateId(), message: "Bucket filled closed drawing area." };
+            return;
+          }
+
+          // Strict rule: if the boundary is not closed, do NOT flood the canvas.
+          // Instead, color only the selected drawing's visible line work.
+          drawing.strokeColor = state.fillColor;
+          drawing.strokes = drawing.strokes.map((stroke) => (
+            stroke.fillRegion || stroke.tool === "eraser" ? stroke : { ...stroke, color: state.fillColor }
+          ));
+          if (frame && frame.drawingStates[drawingId]) {
+            frame.drawingStates[drawingId].strokes = JSON.parse(JSON.stringify(drawing.strokes));
+          }
+          state.toast = { id: generateId(), message: "Open drawing: colored lines only. Close the edge to bucket fill inside." };
         });
       },
 
@@ -967,7 +1004,7 @@ export const useAnimationStore = create<AppState & AnimationActions>()(
 
       setTransformHandleSize: (size) => {
         set((state) => {
-          state.transformHandleSize = Math.max(10, Math.min(100, size));
+          state.transformHandleSize = Math.max(8, Math.min(1000, size));
         });
       },
 

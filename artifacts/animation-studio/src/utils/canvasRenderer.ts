@@ -95,12 +95,23 @@ export function renderDrawing(
 function renderStroke(ctx: CanvasRenderingContext2D, stroke: DrawingStroke, drawing: Drawing) {
   if (stroke.points.length === 0) return;
 
-  // Fill region (flood fill result)
+  // Fill region (bucket fill result). Closed strokes are stored as vector
+  // polygons so export renders the same real filled area as the canvas.
   if (stroke.fillRegion) {
     ctx.fillStyle = stroke.fillRegion.color;
     ctx.globalAlpha *= stroke.fillRegion.opacity;
     ctx.beginPath();
-    if (stroke.points.length > 0) {
+    if (stroke.points.length > 2) {
+      ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+      for (let i = 1; i < stroke.points.length - 1; i++) {
+        const mx = (stroke.points[i].x + stroke.points[i + 1].x) / 2;
+        const my = (stroke.points[i].y + stroke.points[i + 1].y) / 2;
+        ctx.quadraticCurveTo(stroke.points[i].x, stroke.points[i].y, mx, my);
+      }
+      const last = stroke.points[stroke.points.length - 1];
+      ctx.lineTo(last.x, last.y);
+      ctx.closePath();
+    } else if (stroke.points.length > 0) {
       ctx.arc(stroke.points[0].x, stroke.points[0].y, 3, 0, Math.PI * 2);
     }
     ctx.fill();
